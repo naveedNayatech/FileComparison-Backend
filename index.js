@@ -1,6 +1,7 @@
 const express = require('express');
 const app = express();
-const compareApi = require('./FileComparison'); // Import the API
+const compareApi = require('./FileComparison');
+const hospitalFiles = require('./CompareHospitalFiles');
 const cors = require('cors');
 
 const port = 3000;
@@ -10,7 +11,8 @@ app.use(cors({
 }));
 
 // Use the API routes
-app.use('/api', compareApi); // Use the compare API under '/api' path
+app.use('/api', compareApi);
+app.use('/api/hospital', hospitalFiles)
 
 app.listen(port, () => {
   console.log(`Server running on http://localhost:${port}`);
