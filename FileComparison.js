@@ -7,7 +7,6 @@ const multer = require("multer");
 const fs = require("fs");
 var moment = require('moment');
 
-
 // Configure multer for file uploads
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
@@ -18,7 +17,29 @@ const storage = multer.diskStorage({
     }
 });
 const upload = multer({ storage: storage });
-  
+
+const formatResourceProvider = (provider) => {
+    if (!provider) return { firstName: "", lastName: "" };
+    const parts = provider.split("-").map(part => part.trim().replace(/,$/, ""));
+    return {
+        firstName: parts[0] || "",
+        lastName: parts[1] || ""
+    };
+};
+
+const normalizeName = (name) => {
+    name = name.toLowerCase().replace(/\s+/g, ' ').trim();
+    const nameParts = name.split(",");
+    if (nameParts.length === 2) {
+        const lastName = nameParts[0].trim();
+        let firstName = nameParts[1].trim();
+        if (firstName.includes(' ')) {
+            firstName = firstName.split(" ")[0];  // Take the first name part as an initial
+        }
+        return `${lastName} ${firstName}`;
+    }
+    return name;
+};
 
 const compareExcelFiles = (epicFileBuffer, ecwFileBuffer) => {
 
@@ -69,7 +90,6 @@ const compareExcelFiles = (epicFileBuffer, ecwFileBuffer) => {
         };
     };
 
-
     const providerMatch = (epicProviderFirstName, epicProviderLastName, ecwProvider) => {
         const epicProviderFormatted = `${epicProviderFirstName} ${epicProviderLastName}`.toLowerCase().replace(/[-,]/g, '').trim();
         const ecwProviderFormatted = `${ecwProvider.firstName} ${ecwProvider.lastName}`.toLowerCase().replace(/[-,]/g, '').trim();
@@ -82,18 +102,14 @@ const compareExcelFiles = (epicFileBuffer, ecwFileBuffer) => {
     };
 
     const formatDate = (serial) => {
-        // Excel serial date starts from 1899-12-30, so we add the serial days (multiply by 86400000 for milliseconds in a day)
-        const excelStartDate = new Date(1899, 11, 30);  // Starting date of Excel's serial date system
-        const date = new Date(excelStartDate.getTime() + (serial * 86400000)); // Add serial days to starting date
-    
+        const excelStartDate = new Date(1899, 11, 30);  
+        const date = new Date(excelStartDate.getTime() + (serial * 86400000)); 
         return moment(date).format("MM/DD/YYYY");
     };
 
-    // Define CPT codes for patientBilling category
     const patientBillingCPTs = ["IMG1117", "IMG256778", "IMG524", "99999"];
 
     epicData.forEach((epicRow) => {
-        // Check if the CPT code belongs to patientBilling category
         if (patientBillingCPTs.includes(epicRow["CPT Code"])) {
             results.patientBilling.push({
                 ID: epicRow.ID,
@@ -104,26 +120,24 @@ const compareExcelFiles = (epicFileBuffer, ecwFileBuffer) => {
                 comment: "Record for patient billing"
             });
             results.stats.patientBillingCount = (results.stats.patientBillingCount || 0) + 1;
-            return; // Skip further processing for this row
+            return; 
         }
-    
-        // Proceed with original matching logic as before...
+
         const epicName = formatName(epicRow["Patient Name"]);
         const matchingRows = ecwData.filter((ecwRow) => {
             const ecwName = formatName(ecwRow["Patient"]);
-    
-            return (
-                ecwName.lastName === epicName.lastName &&
-                ecwName.firstName === epicName.firstName &&
+
+            // Use string similarity to compare first and last names for partial match
+            const nameSimilarity = stringSimilarity.compareTwoStrings(epicName.lastName + " " + epicName.firstName, ecwName.lastName + " " + ecwName.firstName);
+
+            return nameSimilarity >= 0.7 &&  // Adjust this threshold as needed
                 ecwRow["Patient DOB"] === epicRow["DOB"] &&
-                ecwRow["Start Date of Service"] === epicRow["Svc Date"]
-            );
+                ecwRow["Start Date of Service"] === epicRow["Svc Date"];
         });
-    
-        let categorized = false; // Flag to prevent multiple categorizations
-    
+
+        let categorized = false;
+
         if (matchingRows.length === 0) {
-            // No match found, mark as missing
             results.missing.push({
                 ID: epicRow.ID,
                 "PatientName": epicRow["Patient Name"],
@@ -134,12 +148,10 @@ const compareExcelFiles = (epicFileBuffer, ecwFileBuffer) => {
             results.stats.missingCount++;
             categorized = true;
         } else {
-            // Check if matching rows have identical or different CPT codes
             const sameCPTRows = matchingRows.filter(ecwRow => ecwRow["CPT Code"] === epicRow["CPT Code"]);
             const differentCPTRows = matchingRows.length > 1 && sameCPTRows.length === 0;
     
             if (differentCPTRows) {
-                // If CPT codes differ, count as matched instead of duplicate
                 results.completelyMatched.push({
                     ID: epicRow.ID,
                     "PatientName": epicRow["Patient Name"],
@@ -151,7 +163,6 @@ const compareExcelFiles = (epicFileBuffer, ecwFileBuffer) => {
                 results.stats.completelyMatchedCount++;
                 categorized = true;
             } else if (sameCPTRows.length > 1) {
-                // Count as duplicate if multiple rows match exactly on CPT code
                 results.duplicates.push({
                     ID: epicRow.ID,
                     "PatientName": epicRow["Patient Name"],
@@ -163,12 +174,11 @@ const compareExcelFiles = (epicFileBuffer, ecwFileBuffer) => {
                 results.stats.duplicateCount++;
                 categorized = true;
             } else if (!categorized) {
-                // Check for complete match conditions
                 const ecwRow = sameCPTRows[0] || matchingRows[0];
                 const epicCPT = epicRow["CPT Code"].split(" ")[0];
                 const ecwCPT = ecwRow["CPT Code"].toString();
                 const cptMatch = epicCPT === ecwCPT;
-    
+
                 const epicDiagnosisCodes = extractDiagnosisCodes(epicRow["Diagnosis"]);
                 const icdCodes = [
                     ecwRow["ICD1 Code"],
@@ -177,15 +187,14 @@ const compareExcelFiles = (epicFileBuffer, ecwFileBuffer) => {
                     ecwRow["ICD4 Code"]
                 ];
                 const missingCodes = epicDiagnosisCodes.filter(code => !icdCodes.includes(code));
-    
+
                 const epicProviderFirstName = formatName(epicRow["Service Provider"]).firstName;
                 const epicProviderLastName = formatName(epicRow["Billing Provider"]).lastName;
                 const ecwProvider = formatResourceProvider(ecwRow["Resource Provider"]);
                 
                 const providerComparison = providerMatch(epicProviderFirstName, epicProviderLastName, ecwProvider);
-    
+
                 if ((providerComparison === "exact" || providerComparison === "partial") && cptMatch && missingCodes.length === 0) {
-                    // Count it as completely matched
                     results.completelyMatched.push({
                         ID: epicRow.ID,
                         "PatientName": epicRow["Patient Name"],
@@ -197,12 +206,11 @@ const compareExcelFiles = (epicFileBuffer, ecwFileBuffer) => {
                     results.stats.completelyMatchedCount++;
                     categorized = true;
                 } else if (!categorized) {
-                    // Otherwise, count as mistake with specified comments
                     const mistakeComments = [];
                     if (!cptMatch) mistakeComments.push("CPT is incorrect");
                     missingCodes.forEach(code => mistakeComments.push(`Missing code: ${code}`));
                     if (providerComparison === "none") mistakeComments.push("Resource Provider does not match");
-    
+
                     if (mistakeComments.length > 0) {
                         results.mistakes.push({
                             ID: epicRow.ID,
@@ -219,95 +227,22 @@ const compareExcelFiles = (epicFileBuffer, ecwFileBuffer) => {
                 }
             }
         }
-    });    
-    
+    });
+
     return results;
-};
+}
 
-router.post("/compare", upload.fields([{ name: "epicFile" }, { name: "ecwFile" }]), (req, res) => {
-   
-    const epicFile = req.files['epicFile'] ? req.files['epicFile'][0] : null;
-    const ecwFile = req.files['ecwFile'] ? req.files['ecwFile'][0] : null;
-
-    if (!epicFile || !ecwFile) {
-        return res.status(400).json({ error: 'Both files are required' });
-    }
-
-    const epicFileBuffer = fs.readFileSync(epicFile.path);
-    const ecwFileBuffer = fs.readFileSync(ecwFile.path);
-
+router.post("/compare", upload.fields([{ name: "epicFile" }, { name: "ecwFile" }]), async (req, res) => {
     try {
-    
-        const results = compareExcelFiles(epicFileBuffer, ecwFileBuffer);
+        const epicFileBuffer = fs.readFileSync(req.files["epicFile"][0].path);
+        const ecwFileBuffer = fs.readFileSync(req.files["ecwFile"][0].path);
+        const comparisonResults = compareExcelFiles(epicFileBuffer, ecwFileBuffer);
 
-        res.json({
-            message: "Comparison complete",
-            results,
-        });
+        res.status(200).json(comparisonResults);
     } catch (error) {
-        res.status(500).send("Error comparing Excel files: " + error.message);
+        console.error(error);
+        res.status(500).json({ message: "Error processing files", error });
     }
 });
-
-
-// router.get("/compare/missing", (req, res) => {
-//     try {
-//         const results = compareExcelFiles();
-//         res.json({
-//             totalMissing: results.stats.missingCount,
-//             missingRecords: results.missing,
-//         });
-//     } catch (error) {
-//         res.status(500).send("Error retrieving missing records: " + error.message);
-//     }
-// });
-
-// router.get("/compare/completelyMatched", (req, res) => {
-//     try {
-//         const results = compareExcelFiles();
-//         res.json({
-//             totalCompletelyMatched: results.stats.completelyMatchedCount,
-//             completelyMatchedRecords: results.completelyMatched,
-//         });
-//     } catch (error) {
-//         res.status(500).send("Error retrieving completely matched records: " + error.message);
-//     }
-// });
-
-// router.get("/compare/partiallyMatched", (req, res) => {
-//     try {
-//         const results = compareExcelFiles();
-//         res.json({
-//             totalPartiallyMatched: results.stats.partiallyMatchedCount,
-//             partiallyMatchedRecords: results.partiallyMatched,
-//         });
-//     } catch (error) {
-//         res.status(500).send("Error retrieving partially matched records: " + error.message);
-//     }
-// });
-
-// router.get("/compare/duplicates", (req, res) => {
-//     try {
-//         const results = compareExcelFiles();
-//         res.json({
-//             totalDuplicates: results.stats.duplicateCount,
-//             duplicateRecords: results.duplicates,
-//         });
-//     } catch (error) {
-//         res.status(500).send("Error retrieving duplicate records: " + error.message);
-//     }
-// });
-
-// router.get("/compare/mistakes", (req, res) => {
-//     try {
-//         const results = compareExcelFiles();
-//         res.json({
-//             totalMistakes: results.stats.mistakeCount,
-//             mistakeRecords: results.mistakes,
-//         });
-//     } catch (error) {
-//         res.status(500).send("Error retrieving mistakes: " + error.message);
-//     }
-// });
 
 module.exports = router;

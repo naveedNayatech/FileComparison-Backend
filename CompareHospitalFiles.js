@@ -5,6 +5,7 @@ const xlsx = require("xlsx");
 const multer = require("multer");
 const fs = require("fs");
 const moment = require("moment");
+const stringSimilarity = require("string-similarity");
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
@@ -26,11 +27,9 @@ const formatDate = (serial) => {
 
 // Helper function to select the provider based on midlevel availability
 function getPmdProvider(record) {
-    let provider = record["Midlevel Visit: Visit done in coordination with midlevel:"]
+    return record["Midlevel Visit: Visit done in coordination with midlevel:"]
         ? record["Midlevel Visit: Visit done in coordination with midlevel:"].trim()
         : record["Provider"] ? record["Provider"].split(",")[0].trim().toLowerCase() : null;
-    
-    return provider;
 }
 
 // Helper functions for provider extraction
@@ -43,17 +42,14 @@ const getFirstNameFromResourceProvider = (resourceProvider) => {
     }
 };
 
-
 const getLastNameFromRenderingProvider = (renderingProvider) => {
-    const trimmedRenderingProvider = renderingProvider.trim().toLowerCase();
-    return trimmedRenderingProvider.split(",")[1].trim();
+    return renderingProvider.trim().toLowerCase().split(",")[1].trim();
 };
 
-// Main function to compare PMD and ECW records
 function compareExcelFiles(pmdFileBuffer, ecwFileBuffer) {
     const pmdWorkbook = xlsx.read(pmdFileBuffer, { type: "buffer" });
     const ecwWorkbook = xlsx.read(ecwFileBuffer, { type: "buffer" });
-    
+
     const pmdSheet = pmdWorkbook.Sheets[pmdWorkbook.SheetNames[0]];
     const ecwSheet = ecwWorkbook.Sheets[ecwWorkbook.SheetNames[0]];
 
@@ -97,51 +93,78 @@ function compareExcelFiles(pmdFileBuffer, ecwFileBuffer) {
     let missingCount = 0;
     let mistakesCount = 0;
 
-    // Compare PMD and ECW records
-    pmdRecords.forEach(pmdRecord => {
-        const ecwMatches = ecwRecords.filter(
-            ecwRecord =>
-                ecwRecord.name === pmdRecord.name &&
-                ecwRecord.dob === pmdRecord.dob &&
-                ecwRecord.visitDate === pmdRecord.visitDate
-        );
+    // Create a map for ecw records with dob and visitDate as keys for quicker lookup
+    const ecwMap = {};
+    ecwRecords.forEach(record => {
+        const key = `${record.dob}-${record.visitDate}`;
+        if (!ecwMap[key]) {
+            ecwMap[key] = [];
+        }
+        ecwMap[key].push(record);
+    });
 
+    pmdRecords.forEach(pmdRecord => {
+        const key = `${pmdRecord.dob}-${pmdRecord.visitDate}`;
+        const ecwMatches = ecwMap[key] || [];
+
+        // If there are any matches, process them
         if (ecwMatches.length > 0) {
             let claimNo = null;
             const missingCPTs = [];
             let ecwProviders = null;
             let providerMismatch = false;
+            let nameMatch = false;
 
-            pmdRecord.charges.forEach(charge => {
-                const match = ecwMatches.find(ecwRecord => ecwRecord.cpt === charge);
-                if (match) {
-                    claimNo = match.claimNo;
-                    ecwProviders = match.ecwProviders;
-                } else {
-                    missingCPTs.push(charge);
+            // Check string similarity for name comparison (above threshold 0.8)
+            ecwMatches.forEach(ecwRecord => {
+                const nameSimilarity = stringSimilarity.compareTwoStrings(pmdRecord.name, ecwRecord.name);
+                
+                // If similarity is above 0.8 and both visit date and dob match, count as a match
+                if (nameSimilarity > 0.8 && pmdRecord.dob === ecwRecord.dob && pmdRecord.visitDate === ecwRecord.visitDate) {
+                    nameMatch = true;
+                    claimNo = ecwRecord.claimNo;
+                    ecwProviders = ecwRecord.ecwProviders;
                 }
             });
 
-            const providerToCompare = pmdRecord.pmdProvider;
-            if (providerToCompare && ecwProviders && providerToCompare !== ecwProviders) {
-                providerMismatch = true;
-            }
-
-            if (missingCPTs.length > 0 || providerMismatch) {
-                mistakeRecords.push({
-                    ...pmdRecord,
-                    status: `${missingCPTs.length > 0 ? `missing CPTs: ${missingCPTs.join(", ")}` : ""}${providerMismatch ? " Billing providers not matched" : ""}`,
-                    missingCPTs,
-                    claimNo,
-                    ecwProviders
+            if (nameMatch) {
+                pmdRecord.charges.forEach(charge => {
+                    const match = ecwMatches.find(ecwRecord => ecwRecord.cpt === charge);
+                    if (match) {
+                        claimNo = match.claimNo;
+                        ecwProviders = match.ecwProviders;
+                    } else {
+                        missingCPTs.push(charge);
+                    }
                 });
+
+                const providerToCompare = pmdRecord.pmdProvider;
+                if (providerToCompare && ecwProviders && providerToCompare !== ecwProviders) {
+                    providerMismatch = true;
+                }
+
+                if (missingCPTs.length > 0 || providerMismatch) {
+                    mistakeRecords.push({
+                        ...pmdRecord,
+                        status: `${missingCPTs.length > 0 ? `missing CPTs: ${missingCPTs.join(", ")}` : ""}${providerMismatch ? " Billing providers not matched" : ""}`,
+                        missingCPTs,
+                        claimNo,
+                        ecwProviders
+                    });
+                } else {
+                    matchedRecords.push({
+                        ...pmdRecord,
+                        status: "matched",
+                        charges: pmdRecord.charges,
+                        claimNo,
+                        ecwProviders
+                    });
+                }
             } else {
-                matchedRecords.push({
+                missingRecords.push({
                     ...pmdRecord,
-                    status: "matched",
-                    charges: pmdRecord.charges,
-                    claimNo,
-                    ecwProviders
+                    status: "missing",
+                    charges: pmdRecord.charges
                 });
             }
         } else {
@@ -164,6 +187,7 @@ function compareExcelFiles(pmdFileBuffer, ecwFileBuffer) {
         mistakeRecords
     };
 }
+
 
 // Define the route for file comparison
 router.post("/compare", upload.fields([{ name: "pmdFile" }, { name: "ecwFile" }]), (req, res) => {
