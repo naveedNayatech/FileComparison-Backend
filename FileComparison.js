@@ -18,28 +18,28 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage: storage });
 
-const formatResourceProvider = (provider) => {
-    if (!provider) return { firstName: "", lastName: "" };
-    const parts = provider.split("-").map(part => part.trim().replace(/,$/, ""));
-    return {
-        firstName: parts[0] || "",
-        lastName: parts[1] || ""
-    };
-};
+// const formatResourceProvider = (provider) => {
+//     if (!provider) return { firstName: "", lastName: "" };
+//     const parts = provider.split("-").map(part => part.trim().replace(/,$/, ""));
+//     return {
+//         firstName: parts[0] || "",
+//         lastName: parts[1] || ""
+//     };
+// };
 
-const normalizeName = (name) => {
-    name = name.toLowerCase().replace(/\s+/g, ' ').trim();
-    const nameParts = name.split(",");
-    if (nameParts.length === 2) {
-        const lastName = nameParts[0].trim();
-        let firstName = nameParts[1].trim();
-        if (firstName.includes(' ')) {
-            firstName = firstName.split(" ")[0];  // Take the first name part as an initial
-        }
-        return `${lastName} ${firstName}`;
-    }
-    return name;
-};
+// const normalizeName = (name) => {
+//     name = name.toLowerCase().replace(/\s+/g, ' ').trim();
+//     const nameParts = name.split(",");
+//     if (nameParts.length === 2) {
+//         const lastName = nameParts[0].trim();
+//         let firstName = nameParts[1].trim();
+//         if (firstName.includes(' ')) {
+//             firstName = firstName.split(" ")[0];  // Take the first name part as an initial
+//         }
+//         return `${lastName} ${firstName}`;
+//     }
+//     return name;
+// };
 
 const compareExcelFiles = (epicFileBuffer, ecwFileBuffer) => {
 
@@ -151,18 +151,33 @@ const compareExcelFiles = (epicFileBuffer, ecwFileBuffer) => {
             const sameCPTRows = matchingRows.filter(ecwRow => ecwRow["CPT Code"] === epicRow["CPT Code"]);
             const differentCPTRows = matchingRows.length > 1 && sameCPTRows.length === 0;
     
-            if (differentCPTRows) {
-                results.completelyMatched.push({
+            const duplicateRows = ecwData.filter((ecwRow) => {
+                const ecwName = formatName(ecwRow["Patient"]);
+                const nameSimilarity = stringSimilarity.compareTwoStrings(
+                    epicName.lastName + " " + epicName.firstName,
+                    ecwName.lastName + " " + ecwName.firstName
+                );
+                return (
+                    nameSimilarity >= 0.7 &&
+                    ecwRow["Patient DOB"] === epicRow["DOB"] &&
+                    ecwRow["Start Date of Service"] === epicRow["Svc Date"]
+                );
+            });
+            
+            if (duplicateRows.length > 1) {
+                results.duplicates.push({
                     ID: epicRow.ID,
                     "PatientName": epicRow["Patient Name"],
                     "SvcDate": formatDate(epicRow["Svc Date"]),
                     "DOB": formatDate(epicRow["DOB"]),
-                    "ecwClaimNo": matchingRows.map(row => row["Claim No"]).join(", "),
-                    comment: "Matched in ECW with different CPT codes"
+                    "ecwClaimNo": duplicateRows.map(row => row["Claim No"]).join(", "),
+                    comment: "Duplicate records found in ECW"
                 });
-                results.stats.completelyMatchedCount++;
+                results.stats.duplicateCount++;
                 categorized = true;
-            } else if (sameCPTRows.length > 1) {
+            } 
+            
+            else if (sameCPTRows.length > 1) {
                 results.duplicates.push({
                     ID: epicRow.ID,
                     "PatientName": epicRow["Patient Name"],
