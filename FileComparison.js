@@ -80,6 +80,23 @@ const compareExcelFiles = (epicFileBuffer, ecwFileBuffer) => {
             firstName: parts[1] || ""
         };
     };
+    
+    const formatPatientName = (name) => {
+        if (!name) return { lastName: "", firstName: "" };
+        
+        const parts = name.split(",").map(part => part.trim());
+        
+        const extractFirstWord = (str) => {
+            const words = str.split(/[ .-]/).filter(Boolean); // Split on space, dot, or dash
+            return words[0] || ""; // Return the first word or empty string
+        };
+
+        return {  
+            lastName: extractFirstWord(parts[0]).toLowerCase(),
+            firstName: extractFirstWord(parts[1]).toLowerCase()
+        };
+    };
+    
 
     const formatResourceProvider = (provider) => {
         if (!provider) return { firstName: "", lastName: "" };
@@ -107,40 +124,48 @@ const compareExcelFiles = (epicFileBuffer, ecwFileBuffer) => {
         return moment(date).format("MM/DD/YYYY");
     };
 
-    const patientBillingCPTs = ["IMG1117", "IMG256778", "IMG524", "99999"];
+    const patientBillingCPTs = ["IMG1117", "IMG256778", "IMG524", "99999", "90921"];
 
+    function cleanCPTCode(cptCode) {
+        return cptCode
+            .replace(/\s+/g, "") // Remove spaces
+            .replace(/\(.*?\)/g, "") // Remove anything inside parentheses
+            .replace(/[^0-9]/g, ""); // Keep only numeric characters
+    }
+    
     epicData.forEach((epicRow) => {
-        if (patientBillingCPTs.includes(epicRow["CPT Code"])) {
+        if (patientBillingCPTs.includes(cleanCPTCode(epicRow["CPT Code"]))) {
             results.patientBilling.push({
                 ID: epicRow.ID,
-                "PatientName": epicRow["Patient Name"],
+                "PatientName": formatPatientName(epicRow["Patient Name"]), // Format the name here
                 "SvcDate": formatDate(epicRow["Svc Date"]),
                 "DOB": formatDate(epicRow["DOB"]),
-                "CPTCode": epicRow["CPT Code"],
+                "CPTCode": cleanCPTCode(epicRow["CPT Code"]), // Store cleaned CPT code
                 comment: "Record for patient billing"
             });
             results.stats.patientBillingCount = (results.stats.patientBillingCount || 0) + 1;
-            return; 
+            return;
         }
-
-        const epicName = formatName(epicRow["Patient Name"]);
+    
+        const epicName = formatPatientName(epicRow["Patient Name"]);
         const matchingRows = ecwData.filter((ecwRow) => {
-            const ecwName = formatName(ecwRow["Patient"]);
-
-            // Use string similarity to compare first and last names for partial match
-            const nameSimilarity = stringSimilarity.compareTwoStrings(epicName.lastName + " " + epicName.firstName, ecwName.lastName + " " + ecwName.firstName);
-
-            return nameSimilarity >= 0.7 &&  // Adjust this threshold as needed
+            const ecwName = formatPatientName(ecwRow["Patient"]);
+    
+            // Exact match for first and last name
+            return (
+                ecwName.lastName === epicName.lastName &&
+                ecwName.firstName === epicName.firstName &&
                 ecwRow["Patient DOB"] === epicRow["DOB"] &&
-                ecwRow["Start Date of Service"] === epicRow["Svc Date"];
+                ecwRow["Start Date of Service"] === epicRow["Svc Date"]
+            );
         });
-
+    
         let categorized = false;
-
+    
         if (matchingRows.length === 0) {
             results.missing.push({
                 ID: epicRow.ID,
-                "PatientName": epicRow["Patient Name"],
+                "PatientName": formatPatientName(epicRow["Patient Name"]), 
                 "SvcDate": formatDate(epicRow["Svc Date"]),
                 "DOB": formatDate(epicRow["DOB"]),
                 comment: "Record missing in ECW"
@@ -150,15 +175,38 @@ const compareExcelFiles = (epicFileBuffer, ecwFileBuffer) => {
         } else {
             const sameCPTRows = matchingRows.filter(ecwRow => ecwRow["CPT Code"] === epicRow["CPT Code"]);
             const differentCPTRows = matchingRows.length > 1 && sameCPTRows.length === 0;
-    
+            
+            if (differentCPTRows) {
+                // If CPT codes differ, count as matched instead of duplicate
+                results.completelyMatched.push({
+                    ID: epicRow.ID,
+                    "PatientName": epicRow["Patient Name"],
+                    "SvcDate": formatDate(epicRow["Svc Date"]),
+                    "DOB": formatDate(epicRow["DOB"]),
+                    "ecwClaimNo": matchingRows.map(row => row["Claim No"]).join(", "),
+                    comment: "Matched in ECW with different CPT codes"
+                });
+                results.stats.completelyMatchedCount++;
+                categorized = true;
+            } else if (sameCPTRows.length > 1) {
+                results.duplicates.push({
+                    ID: epicRow.ID,
+                    "PatientName": epicRow["Patient Name"],
+                    "SvcDate": formatDate(epicRow["Svc Date"]),
+                    "DOB": formatDate(epicRow["DOB"]),
+                    "ecwClaimNo": sameCPTRows.map(row => row["Claim No"]).join(", "),
+                    comment: "Duplicate records found in ECW"
+                });
+                results.stats.duplicateCount++;
+                categorized = true;
+            }
+
             const duplicateRows = ecwData.filter((ecwRow) => {
-                const ecwName = formatName(ecwRow["Patient"]);
-                const nameSimilarity = stringSimilarity.compareTwoStrings(
-                    epicName.lastName + " " + epicName.firstName,
-                    ecwName.lastName + " " + ecwName.firstName
-                );
+                const ecwName = formatPatientName(ecwRow["Patient"]);
+    
                 return (
-                    nameSimilarity >= 0.7 &&
+                    ecwName.lastName === epicName.lastName &&
+                    ecwName.firstName === epicName.firstName &&
                     ecwRow["Patient DOB"] === epicRow["DOB"] &&
                     ecwRow["Start Date of Service"] === epicRow["Svc Date"]
                 );
@@ -167,7 +215,7 @@ const compareExcelFiles = (epicFileBuffer, ecwFileBuffer) => {
             if (duplicateRows.length > 1) {
                 results.duplicates.push({
                     ID: epicRow.ID,
-                    "PatientName": epicRow["Patient Name"],
+                    "PatientName": formatPatientName(epicRow["Patient Name"]), // Format the name here
                     "SvcDate": formatDate(epicRow["Svc Date"]),
                     "DOB": formatDate(epicRow["DOB"]),
                     "ecwClaimNo": duplicateRows.map(row => row["Claim No"]).join(", "),
@@ -176,11 +224,10 @@ const compareExcelFiles = (epicFileBuffer, ecwFileBuffer) => {
                 results.stats.duplicateCount++;
                 categorized = true;
             } 
-            
             else if (sameCPTRows.length > 1) {
                 results.duplicates.push({
                     ID: epicRow.ID,
-                    "PatientName": epicRow["Patient Name"],
+                    "PatientName": formatPatientName(epicRow["Patient Name"]), // Format the name here
                     "SvcDate": formatDate(epicRow["Svc Date"]),
                     "DOB": formatDate(epicRow["DOB"]),
                     "ecwClaimNo": sameCPTRows.map(row => row["Claim No"]).join(", "),
@@ -193,7 +240,7 @@ const compareExcelFiles = (epicFileBuffer, ecwFileBuffer) => {
                 const epicCPT = epicRow["CPT Code"].split(" ")[0];
                 const ecwCPT = ecwRow["CPT Code"].toString();
                 const cptMatch = epicCPT === ecwCPT;
-
+    
                 const epicDiagnosisCodes = extractDiagnosisCodes(epicRow["Diagnosis"]);
                 const icdCodes = [
                     ecwRow["ICD1 Code"],
@@ -202,17 +249,19 @@ const compareExcelFiles = (epicFileBuffer, ecwFileBuffer) => {
                     ecwRow["ICD4 Code"]
                 ];
                 const missingCodes = epicDiagnosisCodes.filter(code => !icdCodes.includes(code));
-
+    
                 const epicProviderFirstName = formatName(epicRow["Service Provider"]).firstName;
                 const epicProviderLastName = formatName(epicRow["Billing Provider"]).lastName;
                 const ecwProvider = formatResourceProvider(ecwRow["Resource Provider"]);
                 
                 const providerComparison = providerMatch(epicProviderFirstName, epicProviderLastName, ecwProvider);
-
+    
                 if ((providerComparison === "exact" || providerComparison === "partial") && cptMatch && missingCodes.length === 0) {
                     results.completelyMatched.push({
                         ID: epicRow.ID,
-                        "PatientName": epicRow["Patient Name"],
+                        "PatientName": formatPatientName(epicRow["Patient Name"]), // Format the name here
+                        "EPICPatientName": formatPatientName(epicRow["Patient Name"]), // Format the name here
+                        "ECWPatientName": formatPatientName(ecwRow["Patient"]), // Format the name here
                         "SvcDate": formatDate(epicRow["Svc Date"]),
                         "DOB": formatDate(epicRow["DOB"]),
                         "ecwClaimNo": ecwRow["Claim No"],
@@ -225,11 +274,13 @@ const compareExcelFiles = (epicFileBuffer, ecwFileBuffer) => {
                     if (!cptMatch) mistakeComments.push("CPT is incorrect");
                     missingCodes.forEach(code => mistakeComments.push(`Missing code: ${code}`));
                     if (providerComparison === "none") mistakeComments.push("Resource Provider does not match");
-
+    
                     if (mistakeComments.length > 0) {
                         results.mistakes.push({
                             ID: epicRow.ID,
-                            "PatientName": epicRow["Patient Name"],
+                            "PatientName": formatPatientName(epicRow["Patient Name"]), // Format the name here
+                           "EPICPatientName": formatPatientName(epicRow["Patient Name"]), // Format the name here
+                            "ECWPatientName": formatPatientName(ecwRow["Patient"]),
                             "SvcDate": formatDate(epicRow["Svc Date"]),
                             "DOB": formatDate(epicRow["DOB"]),
                             "EPICProvider": `${epicProviderFirstName} ${epicProviderLastName}`,
@@ -243,9 +294,9 @@ const compareExcelFiles = (epicFileBuffer, ecwFileBuffer) => {
             }
         }
     });
-
+    
     return results;
-}
+}    
 
 router.post("/compare", upload.fields([{ name: "epicFile" }, { name: "ecwFile" }]), async (req, res) => {
     try {
