@@ -104,12 +104,25 @@ const compareExcelFiles = (epicFileBuffer, ecwFileBuffer) => {
 
     const patientBillingCPTs = ["IMG1117", "IMG256778", "IMG524", "99999", "90921"];
 
+    // function cleanCPTCode(cptCode) {
+        
+    //     return cptCode
+    //         .replace(/\s+/g, "") // Remove spaces
+    //         .replace(/\(.*?\)/g, "") // Remove anything inside parentheses
+    //         .replace(/[^0-9]/g, ""); // Keep only numeric characters
+    // }
     function cleanCPTCode(cptCode) {
-        return cptCode
-            .replace(/\s+/g, "") // Remove spaces
-            .replace(/\(.*?\)/g, "") // Remove anything inside parentheses
-            .replace(/[^0-9]/g, ""); // Keep only numeric characters
+        if (/\(.*?\)/.test(cptCode)) {
+            // If the code has content inside parentheses, remove it
+            return cptCode.replace(/\s+/g, "") // Remove spaces
+                          .replace(/\(.*?\)/g, "") // Remove anything inside parentheses
+                          .replace(/[^0-9]/g, ""); // Keep only numeric characters
+        } else {
+            // If no parentheses, return as-is
+            return cptCode.trim();
+        }
     }
+    
     
     epicData.forEach((epicRow) => {
         if (patientBillingCPTs.includes(cleanCPTCode(epicRow["CPT Code"]))) {
@@ -166,7 +179,9 @@ const compareExcelFiles = (epicFileBuffer, ecwFileBuffer) => {
                 });
                 results.stats.completelyMatchedCount++;
                 categorized = true;
-            } else if (sameCPTRows.length > 1) {
+            } 
+            // this needs to be comment out else 
+            else if (sameCPTRows.length > 1) {
                 results.duplicates.push({
                     ID: epicRow.ID,
                     "PatientName": epicRow["Patient Name"],
