@@ -5,7 +5,6 @@ const xlsx = require("xlsx");
 const multer = require("multer");
 const fs = require("fs");
 const moment = require("moment");
-const stringSimilarity = require("string-similarity");
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
@@ -46,6 +45,49 @@ const getLastNameFromRenderingProvider = (renderingProvider) => {
     return renderingProvider.trim().toLowerCase().split(",")[1].trim();
 };
 
+function formatPatientNamePMD(lastName, firstName) {
+    const extractFirstWord = (str) => {
+        if (!str) return "";  // Handle undefined or null strings
+        const words = str.split(/[ .-]/).filter(Boolean); // Split by space, dot, or dash
+        return words[0] || ""; // Return the first word
+    };
+
+    return {
+        lastName: extractFirstWord(lastName).toLowerCase(),
+        firstName: extractFirstWord(firstName).toLowerCase()
+    };
+}
+
+// Helper function to format the patient name in ECW format (Last, First)
+function formatPatientNameECW(patientName) {
+    if (!patientName) return { lastName: "", firstName: "" };  // Return empty if undefined or null
+
+    const parts = patientName.split(",").map(part => part.trim());
+
+    const extractFirstWord = (str) => {
+        if (!str) return "";  // Handle undefined or null strings
+        const words = str.split(/[ .-]/).filter(Boolean); // Split by space, dot, or dash
+        return words[0] || ""; // Return the first word
+    };
+
+    return {  
+        lastName: extractFirstWord(parts[0]).toLowerCase(),
+        firstName: extractFirstWord(parts[1]).toLowerCase()
+    };
+}
+
+// Helper function to compare records based on formatted names, DOB, and visit date
+function compareRecords(pmdRecord, ecwRecord) {
+    const pmdPatient = formatPatientNamePMD(pmdRecord["Patient Last"], pmdRecord["Patient First"]);
+    const ecwPatient = formatPatientNameECW(ecwRecord["Patient"]);
+
+    return pmdPatient.lastName === ecwPatient.lastName &&
+           pmdPatient.firstName === ecwPatient.firstName &&
+           pmdRecord.dob === ecwRecord.dob &&
+           pmdRecord.visitDate === ecwRecord.visitDate;
+}
+
+
 function compareExcelFiles(pmdFileBuffer, ecwFileBuffer) {
     const pmdWorkbook = xlsx.read(pmdFileBuffer, { type: "buffer" });
     const ecwWorkbook = xlsx.read(ecwFileBuffer, { type: "buffer" });
@@ -56,7 +98,6 @@ function compareExcelFiles(pmdFileBuffer, ecwFileBuffer) {
     const pmdData = xlsx.utils.sheet_to_json(pmdSheet);
     const ecwData = xlsx.utils.sheet_to_json(ecwSheet);
 
-    // Normalize and format records from PMD
     const pmdRecords = pmdData.map(record => ({
         visitId: record["Visit ID"],
         name: `${record["Patient Last"]}, ${record["Patient First"]}`.toLowerCase().trim(),
@@ -66,34 +107,21 @@ function compareExcelFiles(pmdFileBuffer, ecwFileBuffer) {
         pmdProvider: getPmdProvider(record)
     }));
 
-    // Process ECW records with updated ecwProvider logic
-    const ecwRecords = ecwData.map(record => {
-        const resourceProviderFirstName = getFirstNameFromResourceProvider(record["Resource Provider"]);
-        const renderingProviderLastName = getLastNameFromRenderingProvider(record["Rendering Provider"]);
+    const ecwRecords = ecwData.map(record => ({
+        name: record["Patient"].toLowerCase().trim(),
+        dob: isNaN(record["Patient DOB"]) ? record["Patient DOB"].trim() : formatDate(record["Patient DOB"]),
+        visitDate: isNaN(record["Start Date of Service"]) ? record["Start Date of Service"].trim() : formatDate(record["Start Date of Service"]),
+        cpt: record["CPT Code"],
+        claimNo: record["Claim No"],
+        ecwProvider: formatProvider(record["Resource Provider"])
+    }));
 
-        const ecwProviders = resourceProviderFirstName && renderingProviderLastName
-            ? `${renderingProviderLastName} ${resourceProviderFirstName}`.toLowerCase()
-            : null;
-
-        return {
-            name: record["Patient"].toLowerCase().trim(),
-            dob: isNaN(record["Patient DOB"]) ? record["Patient DOB"].trim() : formatDate(record["Patient DOB"]),
-            visitDate: isNaN(record["Start Date of Service"]) ? record["Start Date of Service"].trim() : formatDate(record["Start Date of Service"]),
-            cpt: record["CPT Code"],
-            claimNo: record["Claim No"],
-            ecwProviders
-        };
-    });
-
-    // Initialize result arrays and counts
     const matchedRecords = [];
     const missingRecords = [];
     const mistakeRecords = [];
-    let matchedCount = 0;
-    let missingCount = 0;
-    let mistakesCount = 0;
+    const duplicates = [];
+    const recordTracker = new Map();
 
-    // Create a map for ecw records with dob and visitDate as keys for quicker lookup
     const ecwMap = {};
     ecwRecords.forEach(record => {
         const key = `${record.dob}-${record.visitDate}`;
@@ -106,68 +134,69 @@ function compareExcelFiles(pmdFileBuffer, ecwFileBuffer) {
     pmdRecords.forEach(pmdRecord => {
         const key = `${pmdRecord.dob}-${pmdRecord.visitDate}`;
         const ecwMatches = ecwMap[key] || [];
-
-        // If there are any matches, process them
+    
         if (ecwMatches.length > 0) {
-            let claimNo = null;
             const missingCPTs = [];
-            let ecwProviders = null;
-            let providerMismatch = false;
-            let nameMatch = false;
+            let duplicateDetected = false;
 
-            // Check string similarity for name comparison (above threshold 0.8)
-            ecwMatches.forEach(ecwRecord => {
-                const nameSimilarity = stringSimilarity.compareTwoStrings(pmdRecord.name, ecwRecord.name);
-                
-                // If similarity is above 0.8 and both visit date and dob match, count as a match
-                if (nameSimilarity > 0.8 && pmdRecord.dob === ecwRecord.dob && pmdRecord.visitDate === ecwRecord.visitDate) {
-                    nameMatch = true;
-                    claimNo = ecwRecord.claimNo;
-                    ecwProviders = ecwRecord.ecwProviders;
-                }
-            });
-
-            if (nameMatch) {
-                pmdRecord.charges.forEach(charge => {
-                    const match = ecwMatches.find(ecwRecord => ecwRecord.cpt === charge);
-                    if (match) {
-                        claimNo = match.claimNo;
-                        ecwProviders = match.ecwProviders;
-                    } else {
-                        missingCPTs.push(charge);
-                    }
-                });
-
-                const providerToCompare = pmdRecord.pmdProvider;
-                if (providerToCompare && ecwProviders && providerToCompare !== ecwProviders) {
-                    providerMismatch = true;
-                }
-
-                if (missingCPTs.length > 0 || providerMismatch) {
-                    mistakeRecords.push({
-                        ...pmdRecord,
-                        status: `${missingCPTs.length > 0 ? `missing CPTs: ${missingCPTs.join(", ")}` : ""}${providerMismatch ? " Billing providers not matched" : ""}`,
-                        missingCPTs,
-                        claimNo,
-                        ecwProviders
+    
+            pmdRecord.charges.forEach(charge => {
+                const matchingRecords = ecwMatches.filter(ecwRecord =>
+                    ecwRecord.cpt === charge &&
+                    compareRecords(pmdRecord, ecwRecord) // Compare based on names, DOB, and visit date
+                );
+    
+                if (matchingRecords.length > 0) {
+                    matchingRecords.forEach(match => {
+                        const duplicateKey = `${match.name}-${match.dob}-${match.visitDate}-${match.cpt}`;
+                        if (recordTracker.has(duplicateKey)) {
+                            duplicateDetected = true;
+                            duplicates.push({
+                                ...pmdRecord,
+                                ecwProvider: match.ecwProvider,
+                                cpt: charge,
+                                claimNo: match.claimNo,
+                                status: "duplicate"
+                            });
+                        } else {
+                            const providerMismatch = pmdRecord.pmdProvider !== match.ecwProvider;
+    
+                            if (providerMismatch) {
+                                mistakeRecords.push({
+                                    ...pmdRecord,
+                                    ecwProvider: match.ecwProvider,
+                                    cpt: charge,
+                                    claimNo: match.claimNo,
+                                    status: "provider mismatch"
+                                });
+                            } else {
+                                recordTracker.set(duplicateKey, true);
+                                matchedRecords.push({
+                                    ...pmdRecord,
+                                    ecwProvider: match.ecwProvider,
+                                    cpt: charge,
+                                    claimNo: match.claimNo,
+                                    status: "matched"
+                                });
+                            }
+                        }
                     });
                 } else {
-                    matchedRecords.push({
-                        ...pmdRecord,
-                        status: "matched",
-                        charges: pmdRecord.charges,
-                        claimNo,
-                        ecwProviders
-                    });
+                    // If no match found, add to missingCPTs
+                    missingCPTs.push(charge);
                 }
-            } else {
-                missingRecords.push({
+            });
+    
+            // If there are any missing CPTs, flag this record as a mistake
+            if (missingCPTs.length > 0) {
+                mistakeRecords.push({
                     ...pmdRecord,
-                    status: "missing",
-                    charges: pmdRecord.charges
+                    status: `missing CPTs: ${missingCPTs.join(", ")}`,
+                    missingCPTs
                 });
             }
         } else {
+            // If no matching records from ECW, add this to missingRecords
             missingRecords.push({
                 ...pmdRecord,
                 status: "missing",
@@ -175,21 +204,29 @@ function compareExcelFiles(pmdFileBuffer, ecwFileBuffer) {
             });
         }
     });
-
+    
     return {
         stats: {
             matchedCount: matchedRecords.length,
             missingCount: missingRecords.length,
-            mistakesCount: mistakeRecords.length
+            mistakesCount: mistakeRecords.length,
+            duplicatesCount: duplicates.length
         },
         matchedRecords,
         missingRecords,
-        mistakeRecords
+        mistakeRecords,
+        duplicates
     };
 }
 
+// Helper function to format provider names
+function formatProvider(provider) {
+    if (!provider) return null;  // Return null if provider is undefined or null
 
-// Define the route for file comparison
+    const parts = provider.split(",").map(part => part.trim());
+    return parts.length === 2 ? `${parts[1]} ${parts[0]}`.toLowerCase() : provider.toLowerCase();
+}
+
 router.post("/compare", upload.fields([{ name: "pmdFile" }, { name: "ecwFile" }]), (req, res) => {
     const pmdFile = req.files['pmdFile'] ? req.files['pmdFile'][0] : null;
     const ecwFile = req.files['ecwFile'] ? req.files['ecwFile'][0] : null;
@@ -209,7 +246,8 @@ router.post("/compare", upload.fields([{ name: "pmdFile" }, { name: "ecwFile" }]
             stats: results.stats,
             matchedRecords: results.matchedRecords,
             missingRecords: results.missingRecords,
-            mistakeRecords: results.mistakeRecords
+            mistakeRecords: results.mistakeRecords,
+            duplicateRecords: results.duplicates 
         });
     } catch (error) {
         res.status(500).send("Error comparing Excel files: " + error.message);

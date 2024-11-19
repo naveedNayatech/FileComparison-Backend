@@ -7,7 +7,7 @@ const multer = require("multer");
 const fs = require("fs");
 var moment = require('moment');
 
-// Configure multer for file uploads
+
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
       cb(null, './uploads'); // Ensure you have an "uploads" folder
