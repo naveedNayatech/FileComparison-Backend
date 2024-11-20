@@ -84,7 +84,7 @@ function compareRecords(pmdRecord, ecwRecord) {
     return pmdPatient.lastName === ecwPatient.lastName &&
            pmdPatient.firstName === ecwPatient.firstName &&
            pmdRecord.dob === ecwRecord.dob &&
-           pmdRecord.visitDate === ecwRecord.visitDate
+           pmdRecord.visitDate === ecwRecord.visitDate;
 }
 
 
@@ -122,10 +122,9 @@ function compareExcelFiles(pmdFileBuffer, ecwFileBuffer) {
     const duplicates = [];
     const recordTracker = new Map();
 
-    // Map ECW records for quick lookup by name, DOB, and visitDate
     const ecwMap = {};
     ecwRecords.forEach(record => {
-        const key = `${record.name}-${record.dob}-${record.visitDate}`;
+        const key = `${record.dob}-${record.visitDate}`;
         if (!ecwMap[key]) {
             ecwMap[key] = [];
         }
@@ -133,21 +132,25 @@ function compareExcelFiles(pmdFileBuffer, ecwFileBuffer) {
     });
 
     pmdRecords.forEach(pmdRecord => {
-        const key = `${pmdRecord.name}-${pmdRecord.dob}-${pmdRecord.visitDate}`;
+        const key = `${pmdRecord.dob}-${pmdRecord.visitDate}`;
         const ecwMatches = ecwMap[key] || [];
     
         if (ecwMatches.length > 0) {
-            // Process each charge from PMD
+            const missingCPTs = [];
+            let duplicateDetected = false;
+
+    
             pmdRecord.charges.forEach(charge => {
-                const matchingRecords = ecwMatches.filter(ecwRecord => ecwRecord.cpt === charge);
+                const matchingRecords = ecwMatches.filter(ecwRecord =>
+                    ecwRecord.cpt === charge &&
+                    compareRecords(pmdRecord, ecwRecord) // Compare based on names, DOB, and visit date
+                );
     
                 if (matchingRecords.length > 0) {
                     matchingRecords.forEach(match => {
-                        const duplicateKey = `${match.name}-${match.dob}-${match.visitDate}-${charge}`;
-                        
-                        // Check if this combination has already been recorded
+                        const duplicateKey = `${match.name}-${match.dob}-${match.visitDate}-${match.cpt}`;
                         if (recordTracker.has(duplicateKey)) {
-                            // Increment duplicate count
+                            duplicateDetected = true;
                             duplicates.push({
                                 ...pmdRecord,
                                 ecwProvider: match.ecwProvider,
@@ -156,11 +159,8 @@ function compareExcelFiles(pmdFileBuffer, ecwFileBuffer) {
                                 status: "duplicate"
                             });
                         } else {
-                            // Mark the record as processed
-                            recordTracker.set(duplicateKey, true);
-    
-                            // Check for provider mismatch
                             const providerMismatch = pmdRecord.pmdProvider !== match.ecwProvider;
+    
                             if (providerMismatch) {
                                 mistakeRecords.push({
                                     ...pmdRecord,
@@ -170,6 +170,7 @@ function compareExcelFiles(pmdFileBuffer, ecwFileBuffer) {
                                     status: "provider mismatch"
                                 });
                             } else {
+                                recordTracker.set(duplicateKey, true);
                                 matchedRecords.push({
                                     ...pmdRecord,
                                     ecwProvider: match.ecwProvider,
@@ -181,16 +182,21 @@ function compareExcelFiles(pmdFileBuffer, ecwFileBuffer) {
                         }
                     });
                 } else {
-                    // Charge is missing in ECW
-                    mistakeRecords.push({
-                        ...pmdRecord,
-                        status: `missing CPT: ${charge}`,
-                        missingCPT: charge
-                    });
+                    // If no match found, add to missingCPTs
+                    missingCPTs.push(charge);
                 }
             });
+    
+            // If there are any missing CPTs, flag this record as a mistake
+            if (missingCPTs.length > 0) {
+                mistakeRecords.push({
+                    ...pmdRecord,
+                    status: `missing CPTs: ${missingCPTs.join(", ")}`,
+                    missingCPTs
+                });
+            }
         } else {
-            // No matching record in ECW
+            // If no matching records from ECW, add this to missingRecords
             missingRecords.push({
                 ...pmdRecord,
                 status: "missing",
@@ -199,7 +205,6 @@ function compareExcelFiles(pmdFileBuffer, ecwFileBuffer) {
         }
     });
     
-
     return {
         stats: {
             matchedCount: matchedRecords.length,
@@ -213,8 +218,6 @@ function compareExcelFiles(pmdFileBuffer, ecwFileBuffer) {
         duplicates
     };
 }
-
-
 
 // Helper function to format provider names
 function formatProvider(provider) {
