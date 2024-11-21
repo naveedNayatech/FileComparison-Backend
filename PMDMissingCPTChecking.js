@@ -24,32 +24,34 @@ const formatDate = (serial) => {
     return moment(date).format("MM/DD/YYYY");
 };
 
+// Helper function to select the provider based on midlevel availability
+// function getPmdProvider(record) {
+//     return record["Midlevel Visit: Visit done in coordination with midlevel:"] 
+//         ? record["Midlevel Visit: Visit done in coordination with midlevel:"].trim().lowercase()
+//         : record["Provider"] ? record["Provider"].split(",")[0].trim().toLowerCase() : null;
+// }
 function getPmdProvider(record) {
+    
+    const getFirstWord = (str) => (str ? str.split(" ")[0].trim().toLowerCase() : null);
+
+    const getLastName = (provider) => {
+        if (!provider) return null;
+        const lastName = provider.split(",")[0].trim();
+        if (lastName.toLowerCase() === "billy try hour") {
+            return "hour"; // Special case for "Billy Try hour"
+        }
+        return lastName.toLowerCase();
+    };
+
     return record["Midlevel Visit: Visit done in coordination with midlevel:"]
-        ? record["Midlevel Visit: Visit done in coordination with midlevel:"].toLowerCase().trim().split(" ")[0] +" - "+
-        record["Provider"]
-            .split(",")[0]
-            .trim()
-            .split(" ")
-            .pop()
-            .toLowerCase()
-        : record["Provider"] ? record["Provider"].split(",")[0].trim().toLowerCase() : null;
+        ? getFirstWord(record["Midlevel Visit: Visit done in coordination with midlevel:"])
+        : record["Provider"]
+        ? getLastName(record["Provider"])
+        : null;
 }
 
-// Helper functions for provider extraction
-const getFirstNameFromResourceProvider = (resourceProvider) => {
-    const trimmedResourceProvider = resourceProvider.trim().toLowerCase();
-    if (trimmedResourceProvider.includes(',') && !trimmedResourceProvider.includes('-')) {
-        return trimmedResourceProvider.split(",")[0].trim();
-    } else if (trimmedResourceProvider.includes('-')) {
-        return trimmedResourceProvider.split("-")[0].trim();
-    }
-};
 
-const getLastNameFromRenderingProvider = (renderingProvider) => {
-    return renderingProvider.trim().toLowerCase().split(",")[1].trim();
-};
-
+// Helper function to format patient names in PMD file
 function formatPatientNamePMD(lastName, firstName) {
     const extractFirstWord = (str) => {
         if (!str) return "";  // Handle undefined or null strings
@@ -63,7 +65,7 @@ function formatPatientNamePMD(lastName, firstName) {
     };
 }
 
-// Helper function to format the patient name in ECW format (Last, First)
+// Helper function to format patient names in ECW file (Last, First)
 function formatPatientNameECW(patientName) {
     if (!patientName) return { lastName: "", firstName: "" };  // Return empty if undefined or null
 
@@ -92,8 +94,8 @@ function compareRecords(pmdRecord, ecwRecord) {
            pmdRecord.visitDate === ecwRecord.visitDate;
 }
 
-
-function compareExcelFiles(pmdFileBuffer, ecwFileBuffer) {
+// Function to compare the records and identify missing CPTs
+function compareExcelFilesForMissingCpts(pmdFileBuffer, ecwFileBuffer) {
     const pmdWorkbook = xlsx.read(pmdFileBuffer, { type: "buffer" });
     const ecwWorkbook = xlsx.read(ecwFileBuffer, { type: "buffer" });
 
@@ -117,14 +119,11 @@ function compareExcelFiles(pmdFileBuffer, ecwFileBuffer) {
         dob: isNaN(record["Patient DOB"]) ? record["Patient DOB"].trim() : formatDate(record["Patient DOB"]),
         visitDate: isNaN(record["Start Date of Service"]) ? record["Start Date of Service"].trim() : formatDate(record["Start Date of Service"]),
         cpt: record["CPT Code"],
-        claimNo: record["Claim No"],
-        ecwProvider: formatProvider(record["Resource Provider"])
+        claimNo: record["Claim No"]
     }));
 
     const matchedRecords = [];
     const missingRecords = [];
-    const mistakeRecords = [];
-    const duplicates = [];
     const recordTracker = new Map();
 
     const ecwMap = {};
@@ -139,101 +138,41 @@ function compareExcelFiles(pmdFileBuffer, ecwFileBuffer) {
     pmdRecords.forEach(pmdRecord => {
         const key = `${pmdRecord.dob}-${pmdRecord.visitDate}`;
         const ecwMatches = ecwMap[key] || [];
-    
+
         if (ecwMatches.length > 0) {
             const missingCPTs = [];
-            let duplicateDetected = false;
 
-    
             pmdRecord.charges.forEach(charge => {
                 const matchingRecords = ecwMatches.filter(ecwRecord =>
                     ecwRecord.cpt === charge &&
-                    compareRecords(pmdRecord, ecwRecord) // Compare based on names, DOB, and visit date
+                    compareRecords(pmdRecord, ecwRecord)
                 );
-    
-                if (matchingRecords.length > 0) {
-                    matchingRecords.forEach(match => {
-                        const duplicateKey = `${match.name}-${match.dob}-${match.visitDate}-${match.cpt}`;
-                        if (recordTracker.has(duplicateKey)) {
-                            duplicateDetected = true;
-                            duplicates.push({
-                                ...pmdRecord,
-                                ecwProvider: match.ecwProvider,
-                                cpt: charge,
-                                claimNo: match.claimNo,
-                                status: "duplicate"
-                            });
-                        } else {
-                            const providerMismatch = pmdRecord.pmdProvider !== match.ecwProvider;
-    
-                            if (providerMismatch) {
-                                mistakeRecords.push({
-                                    ...pmdRecord,
-                                    ecwProvider: match.ecwProvider,
-                                    cpt: charge,
-                                    claimNo: match.claimNo,
-                                    status: "provider mismatch"
-                                });
-                            } else {
-                                recordTracker.set(duplicateKey, true);
-                                matchedRecords.push({
-                                    ...pmdRecord,
-                                    ecwProvider: match.ecwProvider,
-                                    cpt: charge,
-                                    claimNo: match.claimNo,
-                                    status: "matched"
-                                });
-                            }
-                        }
-                    });
-                } else {
-                    // If no match found, add to missingCPTs
+
+                if (matchingRecords.length === 0) {
                     missingCPTs.push(charge);
                 }
             });
-    
-            // If there are any missing CPTs, flag this record as a mistake
+
             if (missingCPTs.length > 0) {
-                mistakeRecords.push({
+                missingRecords.push({
                     ...pmdRecord,
                     status: `missing CPTs: ${missingCPTs.join(", ")}`,
                     missingCPTs
                 });
             }
-        } else {
-            // If no matching records from ECW, add this to missingRecords
-            missingRecords.push({
-                ...pmdRecord,
-                status: "missing",
-                charges: pmdRecord.charges
-            });
         }
     });
-    
+
     return {
         stats: {
-            matchedCount: matchedRecords.length,
-            missingCount: missingRecords.length,
-            mistakesCount: mistakeRecords.length,
-            duplicatesCount: duplicates.length
+            missingCount: missingRecords.length
         },
-        matchedRecords,
-        missingRecords,
-        mistakeRecords,
-        duplicates
+        missingRecords
     };
 }
 
-// Helper function to format provider names
-function formatProvider(provider) {
-    if (!provider) return null;
-
-    const parts = provider.split(",").map(part => part.trim());
-    return parts.length === 2 ? `${parts[1]} ${parts[0]}`.toLowerCase().trim() : provider.toLowerCase().trim();
-}
-
-
-router.post("/compare", upload.fields([{ name: "pmdFile" }, { name: "ecwFile" }]), (req, res) => {
+// Route to compare PMD and ECW files and return records with missing CPT codes
+router.post("/compare-missing-cpts", upload.fields([{ name: "pmdFile" }, { name: "ecwFile" }]), (req, res) => {
     const pmdFile = req.files['pmdFile'] ? req.files['pmdFile'][0] : null;
     const ecwFile = req.files['ecwFile'] ? req.files['ecwFile'][0] : null;
 
@@ -245,15 +184,12 @@ router.post("/compare", upload.fields([{ name: "pmdFile" }, { name: "ecwFile" }]
     const ecwFileBuffer = fs.readFileSync(ecwFile.path);
 
     try {
-        const results = compareExcelFiles(pmdFileBuffer, ecwFileBuffer);
+        const results = compareExcelFilesForMissingCpts(pmdFileBuffer, ecwFileBuffer);
 
         res.json({
-            message: "Hospital Files Comparison complete",
+            message: "Missing CPT comparison complete",
             stats: results.stats,
-            matchedRecords: results.matchedRecords,
-            missingRecords: results.missingRecords,
-            mistakeRecords: results.mistakeRecords,
-            duplicateRecords: results.duplicates 
+            missingRecords: results.missingRecords
         });
     } catch (error) {
         res.status(500).send("Error comparing Excel files: " + error.message);
