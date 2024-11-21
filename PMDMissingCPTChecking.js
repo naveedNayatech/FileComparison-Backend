@@ -24,12 +24,6 @@ const formatDate = (serial) => {
     return moment(date).format("MM/DD/YYYY");
 };
 
-// Helper function to select the provider based on midlevel availability
-// function getPmdProvider(record) {
-//     return record["Midlevel Visit: Visit done in coordination with midlevel:"] 
-//         ? record["Midlevel Visit: Visit done in coordination with midlevel:"].trim().lowercase()
-//         : record["Provider"] ? record["Provider"].split(",")[0].trim().toLowerCase() : null;
-// }
 function getPmdProvider(record) {
     
     const getFirstWord = (str) => (str ? str.split(" ")[0].trim().toLowerCase() : null);

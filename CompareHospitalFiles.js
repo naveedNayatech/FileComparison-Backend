@@ -36,20 +36,6 @@ function getPmdProvider(record) {
         : record["Provider"] ? record["Provider"].split(",")[0].trim().toLowerCase() : null;
 }
 
-// Helper functions for provider extraction
-const getFirstNameFromResourceProvider = (resourceProvider) => {
-    const trimmedResourceProvider = resourceProvider.trim().toLowerCase();
-    if (trimmedResourceProvider.includes(',') && !trimmedResourceProvider.includes('-')) {
-        return trimmedResourceProvider.split(",")[0].trim();
-    } else if (trimmedResourceProvider.includes('-')) {
-        return trimmedResourceProvider.split("-")[0].trim();
-    }
-};
-
-const getLastNameFromRenderingProvider = (renderingProvider) => {
-    return renderingProvider.trim().toLowerCase().split(",")[1].trim();
-};
-
 function formatPatientNamePMD(lastName, firstName) {
     const extractFirstWord = (str) => {
         if (!str) return "";  // Handle undefined or null strings
@@ -150,7 +136,7 @@ function compareExcelFiles(pmdFileBuffer, ecwFileBuffer) {
                     ecwRecord.cpt === charge &&
                     compareRecords(pmdRecord, ecwRecord) // Compare based on names, DOB, and visit date
                 );
-    
+                
                 if (matchingRecords.length > 0) {
                     matchingRecords.forEach(match => {
                         const duplicateKey = `${match.name}-${match.dob}-${match.visitDate}-${match.cpt}`;
@@ -224,7 +210,7 @@ function compareExcelFiles(pmdFileBuffer, ecwFileBuffer) {
     };
 }
 
-// Helper function to format provider names
+
 function formatProvider(provider) {
     if (!provider) return null;
 
