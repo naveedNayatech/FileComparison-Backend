@@ -104,21 +104,27 @@ const compareExcelFiles = (epicFileBuffer, ecwFileBuffer) => {
 
     const patientBillingCPTs = ["IMG1117", "IMG256778", "IMG524", "99999", "90921"];
 
+    
     // function cleanCPTCode(cptCode) {
-        
-    //     return cptCode
-    //         .replace(/\s+/g, "") // Remove spaces
-    //         .replace(/\(.*?\)/g, "") // Remove anything inside parentheses
-    //         .replace(/[^0-9]/g, ""); // Keep only numeric characters
+    //     if (/\(.*?\)/.test(cptCode)) {
+    //         // If the code has content inside parentheses, remove it
+    //         return cptCode.replace(/\s+/g, "") // Remove spaces
+    //                       .replace(/\(.*?\)/g, "") // Remove anything inside parentheses
+    //                       .replace(/[^0-9]/g, ""); // Keep only numeric characters
+    //     } else {
+    //         // If no parentheses, return as-is
+    //         return cptCode.trim();
+    //     }
     // }
     function cleanCPTCode(cptCode) {
+        if (!cptCode) return ""; // handle undefined/null
+
         if (/\(.*?\)/.test(cptCode)) {
-            // If the code has content inside parentheses, remove it
-            return cptCode.replace(/\s+/g, "") // Remove spaces
-                          .replace(/\(.*?\)/g, "") // Remove anything inside parentheses
-                          .replace(/[^0-9]/g, ""); // Keep only numeric characters
+            return cptCode
+            .replace(/\s+/g, "")      // Remove spaces
+            .replace(/\(.*?\)/g, "")  // Remove parentheses content
+            .replace(/[^0-9]/g, "");  // Keep only numbers
         } else {
-            // If no parentheses, return as-is
             return cptCode.trim();
         }
     }
